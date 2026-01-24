@@ -166,6 +166,8 @@ class RestrictedPostgresRunner(PostgresRunner):
         - CTEs (Common Table Expressions) - WITH name AS (...)
         - Subquery aliases
         - Schema-qualified table names
+        - EXTRACT(... FROM column) syntax (not a table reference)
+        - LATERAL, CROSS JOIN, etc.
 
         Args:
             sql: SQL query to validate
@@ -181,6 +183,26 @@ class RestrictedPostgresRunner(PostgresRunner):
         sql_cleaned = re.sub(r"--[^\n]*", "", sql_lower)
         # Remove multi-line comments
         sql_cleaned = re.sub(r"/\*.*?\*/", "", sql_cleaned, flags=re.DOTALL)
+
+        # Remove EXTRACT(... FROM ...) patterns to avoid false positives
+        # EXTRACT(EPOCH FROM column) uses FROM but it's not a table reference
+        sql_cleaned = re.sub(
+            r"extract\s*\([^)]*\bfrom\b[^)]*\)", "EXTRACT_REMOVED", sql_cleaned
+        )
+
+        # Also handle other functions that use FROM keyword:
+        # - SUBSTRING(str FROM pos FOR len)
+        # - TRIM(LEADING/TRAILING/BOTH ... FROM str)
+        # - OVERLAY(str PLACING str FROM int)
+        sql_cleaned = re.sub(
+            r"substring\s*\([^)]*\bfrom\b[^)]*\)", "SUBSTRING_REMOVED", sql_cleaned
+        )
+        sql_cleaned = re.sub(
+            r"trim\s*\([^)]*\bfrom\b[^)]*\)", "TRIM_REMOVED", sql_cleaned
+        )
+        sql_cleaned = re.sub(
+            r"overlay\s*\([^)]*\bfrom\b[^)]*\)", "OVERLAY_REMOVED", sql_cleaned
+        )
 
         # Extract CTE names - these are NOT actual tables
         cte_names = self._extract_cte_names(sql_cleaned)
