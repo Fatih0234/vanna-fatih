@@ -143,12 +143,14 @@ class GeminiLlmService(LlmService):
 
             # Accumulate chunks for tool calls
             accumulated_chunks = []
+            has_yielded_content = False
 
             for chunk in stream:
                 accumulated_chunks.append(chunk)
 
                 # Yield text content as it arrives
                 if hasattr(chunk, "text") and chunk.text:
+                    has_yielded_content = True
                     yield LlmStreamChunk(content=chunk.text)
 
             # After stream completes, check for tool calls in accumulated response
@@ -167,6 +169,10 @@ class GeminiLlmService(LlmService):
                     )
                 else:
                     yield LlmStreamChunk(finish_reason=finish_reason or "stop")
+            else:
+                # No chunks received - yield empty stop to prevent hanging
+                logger.warning("Gemini stream returned no chunks")
+                yield LlmStreamChunk(finish_reason="stop")
 
         except Exception as e:
             logger.error(f"Error streaming from Gemini API: {e}")
@@ -235,12 +241,15 @@ class GeminiLlmService(LlmService):
                     except (json.JSONDecodeError, TypeError):
                         response_content = {"result": m.content}
 
-                    # Extract function name from tool_call_id or use a default
-                    function_name = m.tool_call_id.replace("call_", "")
+                    # Extract function name from tool_call_id
+                    # Handle both "call_run_sql" and "run_sql" formats
+                    function_name = m.tool_call_id
+                    if function_name.startswith("call_"):
+                        function_name = function_name[5:]  # Remove "call_" prefix
 
                     contents.append(
                         self._types.Content(
-                            role="function",
+                            role="user",  # Gemini expects function responses with role="user"
                             parts=[
                                 self._types.Part(
                                     function_response=self._types.FunctionResponse(
