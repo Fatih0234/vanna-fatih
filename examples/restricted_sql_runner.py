@@ -72,9 +72,100 @@ class RestrictedPostgresRunner(PostgresRunner):
 
         print(f"✓ SQL queries restricted to tables: {', '.join(self.allowed_tables)}")
 
+    def _extract_cte_names(self, sql: str) -> set:
+        """
+        Extract CTE (Common Table Expression) names from a SQL query.
+
+        CTEs are defined with: WITH name AS (...), name2 AS (...), ...
+        These names should not be treated as actual table references.
+
+        Args:
+            sql: SQL query (case-insensitive)
+
+        Returns:
+            Set of CTE names (lowercase)
+        """
+        cte_names = set()
+        sql_lower = sql.lower()
+
+        # Check if query starts with WITH (has CTEs)
+        if not sql_lower.strip().startswith("with"):
+            return cte_names
+
+        # Pattern to match CTE definitions: name AS (
+        # Handles: WITH cte1 AS (...), cte2 AS (...), RECURSIVE cte3 AS (...)
+        # Also handles: WITH RECURSIVE cte AS (...)
+        cte_pattern = r"\b(\w+)\s+as\s*\("
+
+        # Find the position where CTEs end and main query begins
+        # This is tricky because CTEs can have nested parentheses
+        # We'll extract everything before the final SELECT/INSERT/UPDATE/DELETE
+
+        # First, let's find all potential CTE names
+        # They appear after WITH or after a comma, before AS (
+
+        # Remove the RECURSIVE keyword if present
+        sql_for_cte = re.sub(r"\bwith\s+recursive\b", "with", sql_lower)
+
+        # Find the WITH clause content
+        # We need to be careful about nested parentheses
+        with_match = re.match(r"\s*with\s+", sql_for_cte)
+        if not with_match:
+            return cte_names
+
+        # Extract all "name AS (" patterns
+        for match in re.finditer(cte_pattern, sql_for_cte):
+            cte_name = match.group(1)
+            # Skip SQL keywords that might match
+            if cte_name not in (
+                "select",
+                "insert",
+                "update",
+                "delete",
+                "from",
+                "where",
+                "join",
+                "left",
+                "right",
+                "inner",
+                "outer",
+                "cross",
+                "on",
+                "and",
+                "or",
+                "not",
+                "in",
+                "exists",
+                "case",
+                "when",
+                "then",
+                "else",
+                "end",
+                "group",
+                "order",
+                "having",
+                "limit",
+                "offset",
+                "union",
+                "intersect",
+                "except",
+                "all",
+                "distinct",
+                "recursive",
+                "with",
+            ):
+                cte_names.add(cte_name)
+
+        return cte_names
+
     def _validate_sql(self, sql: str) -> tuple[bool, str]:
         """
         Validate that SQL query only accesses allowed tables.
+
+        This method properly handles:
+        - CTEs (Common Table Expressions) - WITH name AS (...)
+        - Subquery aliases
+        - Schema-qualified table names
 
         Args:
             sql: SQL query to validate
@@ -88,9 +179,41 @@ class RestrictedPostgresRunner(PostgresRunner):
         # Remove comments and strings to avoid false positives
         # Simple approach: remove single-line comments
         sql_cleaned = re.sub(r"--[^\n]*", "", sql_lower)
+        # Remove multi-line comments
+        sql_cleaned = re.sub(r"/\*.*?\*/", "", sql_cleaned, flags=re.DOTALL)
+
+        # Extract CTE names - these are NOT actual tables
+        cte_names = self._extract_cte_names(sql_cleaned)
+
+        # Also extract subquery aliases (FROM (...) AS alias)
+        # These appear as: ) AS alias or ) alias
+        subquery_alias_pattern = r"\)\s+(?:as\s+)?([a-z_][a-z0-9_]*)"
+        subquery_aliases = set()
+        for match in re.finditer(subquery_alias_pattern, sql_cleaned):
+            alias = match.group(1)
+            if alias not in (
+                "select",
+                "where",
+                "join",
+                "on",
+                "and",
+                "or",
+                "group",
+                "order",
+                "having",
+                "limit",
+                "union",
+                "left",
+                "right",
+                "inner",
+                "outer",
+                "cross",
+                "natural",
+                "full",
+            ):
+                subquery_aliases.add(alias)
 
         # Extract table references from FROM and JOIN clauses
-        # This is a simplified pattern - production code might need more robust parsing
         from_pattern = r"\bfrom\s+([a-z0-9_\.]+)"
         join_pattern = r"\bjoin\s+([a-z0-9_\.]+)"
 
@@ -99,6 +222,9 @@ class RestrictedPostgresRunner(PostgresRunner):
         # Find all FROM clauses
         for match in re.finditer(from_pattern, sql_cleaned):
             table = match.group(1)
+            # Skip if this is a CTE name or subquery alias
+            if table in cte_names or table in subquery_aliases:
+                continue
             # Normalize: if no schema, assume public
             if "." not in table:
                 table = f"public.{table}"
@@ -107,6 +233,9 @@ class RestrictedPostgresRunner(PostgresRunner):
         # Find all JOIN clauses
         for match in re.finditer(join_pattern, sql_cleaned):
             table = match.group(1)
+            # Skip if this is a CTE name or subquery alias
+            if table in cte_names or table in subquery_aliases:
+                continue
             # Normalize: if no schema, assume public
             if "." not in table:
                 table = f"public.{table}"
