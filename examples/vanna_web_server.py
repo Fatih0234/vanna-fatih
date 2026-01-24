@@ -304,6 +304,7 @@ def create_app():
         config=AgentConfig(
             stream_responses=True,
             ui_features=ui_features,
+            max_tool_iterations=25,  # Increased from default 10 for complex queries
         ),
     )
 
