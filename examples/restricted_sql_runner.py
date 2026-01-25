@@ -185,9 +185,10 @@ class RestrictedPostgresRunner(PostgresRunner):
         sql_cleaned = re.sub(r"/\*.*?\*/", "", sql_cleaned, flags=re.DOTALL)
 
         # Remove EXTRACT(... FROM ...) patterns to avoid false positives
-        # EXTRACT(EPOCH FROM column) uses FROM but it's not a table reference
+        # EXTRACT(EPOCH FROM column) uses FROM but it's not a table reference.
+        # NOTE: Use non-greedy matching so we don't "eat" the FROM token.
         sql_cleaned = re.sub(
-            r"extract\s*\([^)]*\bfrom\b[^)]*\)", "EXTRACT_REMOVED", sql_cleaned
+            r"extract\s*\([^)]*?\bfrom\b[^)]*?\)", "EXTRACT_REMOVED", sql_cleaned
         )
 
         # Also handle other functions that use FROM keyword:
@@ -195,13 +196,13 @@ class RestrictedPostgresRunner(PostgresRunner):
         # - TRIM(LEADING/TRAILING/BOTH ... FROM str)
         # - OVERLAY(str PLACING str FROM int)
         sql_cleaned = re.sub(
-            r"substring\s*\([^)]*\bfrom\b[^)]*\)", "SUBSTRING_REMOVED", sql_cleaned
+            r"substring\s*\([^)]*?\bfrom\b[^)]*?\)", "SUBSTRING_REMOVED", sql_cleaned
         )
         sql_cleaned = re.sub(
-            r"trim\s*\([^)]*\bfrom\b[^)]*\)", "TRIM_REMOVED", sql_cleaned
+            r"trim\s*\([^)]*?\bfrom\b[^)]*?\)", "TRIM_REMOVED", sql_cleaned
         )
         sql_cleaned = re.sub(
-            r"overlay\s*\([^)]*\bfrom\b[^)]*\)", "OVERLAY_REMOVED", sql_cleaned
+            r"overlay\s*\([^)]*?\bfrom\b[^)]*?\)", "OVERLAY_REMOVED", sql_cleaned
         )
 
         # Extract CTE names - these are NOT actual tables
@@ -235,9 +236,15 @@ class RestrictedPostgresRunner(PostgresRunner):
             ):
                 subquery_aliases.add(alias)
 
-        # Extract table references from FROM and JOIN clauses
-        from_pattern = r"\bfrom\s+([a-z0-9_\.]+)"
-        join_pattern = r"\bjoin\s+([a-z0-9_\.]+)"
+        # Extract table references from FROM and JOIN clauses.
+        # Avoid matching set-returning functions like:
+        #   FROM generate_series(0, 10)
+        #   JOIN unnest(arr) ...
+        #
+        # Important: the negative lookahead must be placed before the capturing group
+        # to avoid regex backtracking producing partial matches (e.g., generate_serie).
+        from_pattern = r"\bfrom\s+(?![a-z0-9_\.]+\s*\()([a-z0-9_\.]+)"
+        join_pattern = r"\bjoin\s+(?![a-z0-9_\.]+\s*\()([a-z0-9_\.]+)"
 
         referenced_tables = set()
 
