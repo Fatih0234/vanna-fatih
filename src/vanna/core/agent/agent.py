@@ -455,6 +455,15 @@ class Agent:
                         "should_skip_llm", workflow_result.should_skip_llm
                     )
 
+                # Allow workflows to mutate conversation even when they don't short-circuit
+                # the LLM. This enables workflows like `/report` to inject system guidance
+                # while still letting the agent proceed with the normal tool loop.
+                if (
+                    workflow_result.conversation_mutation
+                    and not workflow_result.should_skip_llm
+                ):
+                    await workflow_result.conversation_mutation(conversation)
+
                 if workflow_result.should_skip_llm:
                     # Workflow handled the message, short-circuit LLM
 

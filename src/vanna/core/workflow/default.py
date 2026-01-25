@@ -53,6 +53,43 @@ class DefaultWorkflowHandler(WorkflowHandler):
     ) -> WorkflowResult:
         """Handle basic commands, but mostly passes through to LLM."""
 
+        report_mode_prompt = (
+            "=== REPORT MODE (SLIDE REPORT WIZARD) ===\n"
+            "The user invoked `/report`.\n"
+            "\n"
+            "Goal: create a shareable slide-style report (HTML) based on THIS chat history.\n"
+            "Constraints:\n"
+            "- 1 idea per slide.\n"
+            "- Do NOT jump straight to charts. First narrate the scenario: why we looked at it and what it means.\n"
+            "- Slide count: decide based on content (usually 2–8). Ask clarifying questions if needed.\n"
+            "- The user may want observations only OR recommendations/next actions; ask if unclear.\n"
+            "\n"
+            "Chart handling:\n"
+            "- Charts created via `visualize_data` are saved as artifacts and logged in tool messages as:\n"
+            "  `VANNA_CHART_ARTIFACT { ...json... }`\n"
+            "- Scan the conversation tool messages to find these chart artifacts.\n"
+            "- Ask the user which charts to include/exclude if unclear.\n"
+            "- When ready, call the `generate_report` tool with:\n"
+            "  - report_title\n"
+            "  - subtitle (audience/purpose)\n"
+            "  - slides (title + narrative + optional charts with chart_html_file)\n"
+            "\n"
+            "Process:\n"
+            "1) Propose 2–4 report angles based on the chat so far; ask the user to pick or edit.\n"
+            "2) Ask framing questions (audience, tone, what to emphasize/avoid).\n"
+            "3) Summarize a draft slide outline and confirm.\n"
+            "4) Generate the report via `generate_report`.\n"
+            "5) After generation, tell the user they can Print → Save as PDF.\n"
+            "\n"
+            "To exit report mode, the user can type `/report_done`.\n"
+        )
+
+        report_mode_off_prompt = (
+            "=== REPORT MODE OFF ===\n"
+            "The user invoked `/report_done`.\n"
+            "Stop the report wizard and return to normal assistant behavior.\n"
+        )
+
         # Handle basic help command
         if message.strip().lower() in ["/help", "help", "/h"]:
             # Check if user is admin
@@ -67,6 +104,8 @@ class DefaultWorkflowHandler(WorkflowHandler):
                 '- "Create a chart of revenue by month"\n\n'
                 "**🔧 Commands**\n"
                 "- `/help` - Show this help message\n"
+                "- `/report` - Create a shareable slide report from this chat\n"
+                "- `/report_done` - Exit report mode\n"
             )
 
             if is_admin:
@@ -90,6 +129,38 @@ class DefaultWorkflowHandler(WorkflowHandler):
                         simple_component=None,
                     )
                 ],
+            )
+
+        # Enable report mode: inject a system instruction and proceed to LLM.
+        if message.strip().lower() == "/report":
+
+            async def enable_report_mode(conv):
+                from vanna.core.storage.models import Message
+
+                conv.add_message(
+                    Message(role="system", content=report_mode_prompt)
+                )
+                conv.metadata["report_mode"] = True
+
+            return WorkflowResult(
+                should_skip_llm=False,
+                conversation_mutation=enable_report_mode,
+            )
+
+        # Disable report mode: inject an overriding system instruction and proceed.
+        if message.strip().lower() == "/report_done":
+
+            async def disable_report_mode(conv):
+                from vanna.core.storage.models import Message
+
+                conv.add_message(
+                    Message(role="system", content=report_mode_off_prompt)
+                )
+                conv.metadata["report_mode"] = False
+
+            return WorkflowResult(
+                should_skip_llm=False,
+                conversation_mutation=disable_report_mode,
             )
 
         # Handle status check command (admin-only)
@@ -274,7 +345,8 @@ class DefaultWorkflowHandler(WorkflowHandler):
             content = (
                 "# 👋 Welcome to Vanna AI\n\n"
                 "I'm your AI data analyst assistant. Ask me anything about your data in plain English!\n\n"
-                "Type `/help` to see what I can do."
+                "Type `/help` to see what I can do.\n\n"
+                "Tip: Type `/report` to create a shareable slide report from this conversation."
             )
 
         return UiComponent(
