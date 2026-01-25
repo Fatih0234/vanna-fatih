@@ -59,10 +59,25 @@ class RunSqlTool(Tool[RunSqlToolArgs]):
             # Use the injected SqlRunner to execute the query
             df = await self.sql_runner.run_sql(args, context)
 
-            # Determine query type
-            query_type = args.sql.strip().upper().split()[0]
+            sql_stripped = args.sql.lstrip()
+            query_type = sql_stripped.upper().split()[0] if sql_stripped else ""
+            sql_lower = sql_stripped.lower()
 
-            if query_type == "SELECT":
+            # Decide whether to treat this statement as returning tabular results.
+            #
+            # Why: queries can start with `WITH` but still be a SELECT, and some DML
+            # statements return rows via `RETURNING`. Rely on the returned DataFrame
+            # shape rather than only the first SQL token.
+            is_rows_affected_df = (
+                list(df.columns) == ["rows_affected"] if hasattr(df, "columns") else False
+            )
+            returns_rows = (
+                (query_type in ("SELECT", "WITH") and not is_rows_affected_df)
+                or (not df.empty and not is_rows_affected_df)
+                or ("returning" in sql_lower and not is_rows_affected_df)
+            )
+
+            if returns_rows:
                 # Handle SELECT queries with results
                 if df.empty:
                     result = "Query executed successfully. No rows returned."
