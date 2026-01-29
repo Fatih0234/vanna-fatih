@@ -181,6 +181,29 @@ export class PlotlyChart extends LitElement {
     }
   }
 
+  async downloadImage(): Promise<void> {
+    if (!this.plotlyDiv || this.data.length === 0) {
+      throw new Error('Chart is not ready to export');
+    }
+
+    const options: any = (this.config as any)?.toImageButtonOptions || {};
+    const format = options.format || 'png';
+    const filename = options.filename || 'chart';
+    const scale = options.scale || 2;
+
+    try {
+      await (Plotly as any).downloadImage(this.plotlyDiv as any, { format, filename, scale });
+    } catch (err) {
+      // Fallback for older Plotly builds
+      const dataUrl = await (Plotly as any).toImage(this.plotlyDiv as any, { format, scale });
+      const a = document.createElement('a');
+      a.href = dataUrl;
+      a.download = `${filename}.${format}`;
+      a.click();
+      a.remove();
+    }
+  }
+
   render() {
     return html`
       ${this.loading ? html`

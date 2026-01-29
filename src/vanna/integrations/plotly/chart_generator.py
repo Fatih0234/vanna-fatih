@@ -1,7 +1,8 @@
 """Plotly-based chart generator with automatic chart type selection."""
 
-from typing import Dict, Any, List, cast
+from typing import Dict, Any, List, Optional, cast
 import json
+import re
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
@@ -23,7 +24,75 @@ class PlotlyChartGenerator:
     # Color palette for charts (excluding cream as it's too light for data)
     COLOR_PALETTE = ["#15a8a8", "#fe5d26", "#bf1363", "#023d60"]
 
-    def generate_chart(self, df: pd.DataFrame, title: str = "Chart") -> Dict[str, Any]:
+    _ACRONYM_TOKENS = {"id", "url", "api", "sql", "llm", "sse"}
+
+    def _humanize_label(self, value: str) -> str:
+        """Convert a column-like identifier into a human-friendly label.
+
+        Examples:
+        - bike_issue_category -> Bike Issue Category
+        - percentageIncrease -> Percentage Increase
+        - user_id -> User ID
+        """
+        text = (value or "").strip()
+        if not text:
+            return ""
+
+        text = re.sub(r"[_\-]+", " ", text)
+        text = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+
+        tokens = []
+        for token in text.split(" "):
+            lower = token.lower()
+            if lower in self._ACRONYM_TOKENS:
+                tokens.append(lower.upper())
+            else:
+                tokens.append(lower.capitalize())
+        return " ".join(tokens)
+
+    def _label_for(self, value: str, labels: Optional[Dict[str, str]]) -> str:
+        if labels and value in labels and labels[value]:
+            return labels[value]
+        return self._humanize_label(value)
+
+    def _apply_axis_overrides(
+        self,
+        fig: go.Figure,
+        *,
+        x_axis_title: Optional[str],
+        y_axis_title: Optional[str],
+    ) -> go.Figure:
+        if x_axis_title:
+            fig.update_layout(xaxis_title=x_axis_title)
+        if y_axis_title:
+            fig.update_layout(yaxis_title=y_axis_title)
+        return fig
+
+    def _enable_bar_value_labels(self, fig: go.Figure) -> go.Figure:
+        """Annotate bars with their values.
+
+        Uses Plotly's built-in bar text rendering. If labels would overlap,
+        Plotly will hide some based on the uniform text settings.
+        """
+        fig.update_traces(
+            selector=dict(type="bar"),
+            texttemplate="%{y}",
+            textposition="outside",
+            cliponaxis=False,
+        )
+        fig.update_layout(uniformtext_minsize=10, uniformtext_mode="hide")
+        return fig
+
+    def generate_chart(
+        self,
+        df: pd.DataFrame,
+        title: str = "Chart",
+        *,
+        labels: Optional[Dict[str, str]] = None,
+        x_axis_title: Optional[str] = None,
+        y_axis_title: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Generate a Plotly chart based on DataFrame shape and types.
 
         Heuristics:
@@ -38,6 +107,9 @@ class PlotlyChartGenerator:
         Args:
             df: DataFrame to visualize
             title: Title for the chart
+            labels: Optional mapping from column name to display label.
+            x_axis_title: Optional override for x-axis title.
+            y_axis_title: Optional override for y-axis title.
 
         Returns:
             Plotly figure as dictionary
@@ -51,6 +123,9 @@ class PlotlyChartGenerator:
         # Heuristic: If 4 or more columns, render as a table
         if len(df.columns) >= 4:
             fig = self._create_table(df, title)
+            self._apply_axis_overrides(
+                fig, x_axis_title=x_axis_title, y_axis_title=y_axis_title
+            )
             result: Dict[str, Any] = json.loads(pio.to_json(fig))
             return result
 
@@ -68,35 +143,45 @@ class PlotlyChartGenerator:
         if is_timeseries and len(numeric_cols) > 0:
             # Time series line chart
             fig = self._create_time_series_chart(
-                df, datetime_cols[0], numeric_cols, title
+                df, datetime_cols[0], numeric_cols, title, labels=labels
             )
         elif len(numeric_cols) == 1 and len(categorical_cols) == 0:
             # Single numeric column: histogram
-            fig = self._create_histogram(df, numeric_cols[0], title)
+            fig = self._create_histogram(df, numeric_cols[0], title, labels=labels)
         elif len(numeric_cols) == 1 and len(categorical_cols) == 1:
             # One categorical, one numeric: bar chart
             fig = self._create_bar_chart(
-                df, categorical_cols[0], numeric_cols[0], title
+                df,
+                categorical_cols[0],
+                numeric_cols[0],
+                title,
+                labels=labels,
             )
         elif len(numeric_cols) == 2:
             # Two numeric columns: scatter plot
-            fig = self._create_scatter_plot(df, numeric_cols[0], numeric_cols[1], title)
+            fig = self._create_scatter_plot(
+                df, numeric_cols[0], numeric_cols[1], title, labels=labels
+            )
         elif len(numeric_cols) >= 3:
             # Multiple numeric columns: correlation heatmap
-            fig = self._create_correlation_heatmap(df, numeric_cols, title)
+            fig = self._create_correlation_heatmap(df, numeric_cols, title, labels=labels)
         elif len(categorical_cols) >= 2:
             # Multiple categorical: grouped bar chart
-            fig = self._create_grouped_bar_chart(df, categorical_cols, title)
+            fig = self._create_grouped_bar_chart(df, categorical_cols, title, labels=labels)
         else:
             # Fallback: show first two columns as scatter/bar
             if len(df.columns) >= 2:
                 fig = self._create_generic_chart(
-                    df, df.columns[0], df.columns[1], title
+                    df, df.columns[0], df.columns[1], title, labels=labels
                 )
             else:
                 raise ValueError(
                     "Cannot determine appropriate visualization for this DataFrame"
                 )
+
+        self._apply_axis_overrides(
+            fig, x_axis_title=x_axis_title, y_axis_title=y_axis_title
+        )
 
         # Convert to JSON-serializable dict using plotly's JSON encoder
         result = json.loads(pio.to_json(fig))
@@ -123,7 +208,14 @@ class PlotlyChartGenerator:
         )
         return fig
 
-    def _create_histogram(self, df: pd.DataFrame, column: str, title: str) -> go.Figure:
+    def _create_histogram(
+        self,
+        df: pd.DataFrame,
+        column: str,
+        title: str,
+        *,
+        labels: Optional[Dict[str, str]] = None,
+    ) -> go.Figure:
         """Create a histogram for a single numeric column."""
         fig = px.histogram(
             df,
@@ -131,12 +223,22 @@ class PlotlyChartGenerator:
             title=title,
             color_discrete_sequence=[self.THEME_COLORS["teal"]],
         )
-        fig.update_layout(xaxis_title=column, yaxis_title="Count", showlegend=False)
+        fig.update_layout(
+            xaxis_title=self._label_for(column, labels),
+            yaxis_title="Count",
+            showlegend=False,
+        )
         self._apply_standard_layout(fig)
         return fig
 
     def _create_bar_chart(
-        self, df: pd.DataFrame, x_col: str, y_col: str, title: str
+        self,
+        df: pd.DataFrame,
+        x_col: str,
+        y_col: str,
+        title: str,
+        *,
+        labels: Optional[Dict[str, str]] = None,
     ) -> go.Figure:
         """Create a bar chart for categorical vs numeric data.
 
@@ -153,14 +255,24 @@ class PlotlyChartGenerator:
             title=title,
             color_discrete_sequence=[self.THEME_COLORS["orange"]],
         )
+        self._enable_bar_value_labels(fig)
         # Ensure x-axis maintains the sorted order (not alphabetical)
         fig.update_xaxes(categoryorder="total descending")
-        fig.update_layout(xaxis_title=x_col, yaxis_title=y_col)
+        fig.update_layout(
+            xaxis_title=self._label_for(x_col, labels),
+            yaxis_title=self._label_for(y_col, labels),
+        )
         self._apply_standard_layout(fig)
         return fig
 
     def _create_scatter_plot(
-        self, df: pd.DataFrame, x_col: str, y_col: str, title: str
+        self,
+        df: pd.DataFrame,
+        x_col: str,
+        y_col: str,
+        title: str,
+        *,
+        labels: Optional[Dict[str, str]] = None,
     ) -> go.Figure:
         """Create a scatter plot for two numeric columns."""
         fig = px.scatter(
@@ -170,15 +282,24 @@ class PlotlyChartGenerator:
             title=title,
             color_discrete_sequence=[self.THEME_COLORS["magenta"]],
         )
-        fig.update_layout(xaxis_title=x_col, yaxis_title=y_col)
+        fig.update_layout(
+            xaxis_title=self._label_for(x_col, labels),
+            yaxis_title=self._label_for(y_col, labels),
+        )
         self._apply_standard_layout(fig)
         return fig
 
     def _create_correlation_heatmap(
-        self, df: pd.DataFrame, columns: List[str], title: str
+        self,
+        df: pd.DataFrame,
+        columns: List[str],
+        title: str,
+        *,
+        labels: Optional[Dict[str, str]] = None,
     ) -> go.Figure:
         """Create a correlation heatmap for multiple numeric columns."""
         corr_matrix = df[columns].corr()
+        display_columns = [self._label_for(c, labels) for c in columns]
         # Custom Vanna color scale: navy (negative) -> cream (neutral) -> teal (positive)
         vanna_colorscale = [
             [0.0, self.THEME_COLORS["navy"]],
@@ -191,8 +312,8 @@ class PlotlyChartGenerator:
                 corr_matrix,
                 title=title,
                 labels=dict(color="Correlation"),
-                x=columns,
-                y=columns,
+                x=display_columns,
+                y=display_columns,
                 color_continuous_scale=vanna_colorscale,
                 zmin=-1,
                 zmax=1,
@@ -202,7 +323,13 @@ class PlotlyChartGenerator:
         return fig
 
     def _create_time_series_chart(
-        self, df: pd.DataFrame, time_col: str, value_cols: List[str], title: str
+        self,
+        df: pd.DataFrame,
+        time_col: str,
+        value_cols: List[str],
+        title: str,
+        *,
+        labels: Optional[Dict[str, str]] = None,
     ) -> go.Figure:
         """Create a time series line chart."""
         fig = go.Figure()
@@ -214,14 +341,14 @@ class PlotlyChartGenerator:
                     x=df[time_col],
                     y=df[col],
                     mode="lines",
-                    name=col,
+                    name=self._label_for(col, labels),
                     line=dict(color=color),
                 )
             )
 
         fig.update_layout(
             title=title,
-            xaxis_title=time_col,
+            xaxis_title=self._label_for(time_col, labels),
             yaxis_title="Value",
             hovermode="x unified",
         )
@@ -229,7 +356,12 @@ class PlotlyChartGenerator:
         return fig
 
     def _create_grouped_bar_chart(
-        self, df: pd.DataFrame, categorical_cols: List[str], title: str
+        self,
+        df: pd.DataFrame,
+        categorical_cols: List[str],
+        title: str,
+        *,
+        labels: Optional[Dict[str, str]] = None,
     ) -> go.Figure:
         """Create a grouped bar chart for multiple categorical columns.
 
@@ -250,8 +382,14 @@ class PlotlyChartGenerator:
                 barmode="group",
                 color_discrete_sequence=self.COLOR_PALETTE,
             )
+            self._enable_bar_value_labels(fig)
             # Ensure x-axis maintains the sorted order (not alphabetical)
             fig.update_xaxes(categoryorder="total descending")
+            fig.update_layout(
+                xaxis_title=self._label_for(categorical_cols[0], labels),
+                yaxis_title="Count",
+                legend_title_text=self._label_for(categorical_cols[1], labels),
+            )
             self._apply_standard_layout(fig)
             return fig
         else:
@@ -267,13 +405,25 @@ class PlotlyChartGenerator:
                 title=title,
                 color_discrete_sequence=[self.THEME_COLORS["teal"]],
             )
+            self._enable_bar_value_labels(fig)
             # Ensure x-axis maintains the sorted order (not alphabetical)
             fig.update_xaxes(categoryorder="total descending")
+            fig.update_layout(
+                xaxis_title=self._label_for(categorical_cols[0], labels),
+                yaxis_title="Count",
+                showlegend=False,
+            )
             self._apply_standard_layout(fig)
             return fig
 
     def _create_generic_chart(
-        self, df: pd.DataFrame, col1: str, col2: str, title: str
+        self,
+        df: pd.DataFrame,
+        col1: str,
+        col2: str,
+        title: str,
+        *,
+        labels: Optional[Dict[str, str]] = None,
     ) -> go.Figure:
         """Create a generic chart for any two columns.
 
@@ -295,8 +445,13 @@ class PlotlyChartGenerator:
                 title=title,
                 color_discrete_sequence=[self.THEME_COLORS["orange"]],
             )
+            self._enable_bar_value_labels(fig)
             # Ensure x-axis maintains the sorted order (not alphabetical)
             fig.update_xaxes(categoryorder="total descending")
+            fig.update_layout(
+                xaxis_title=self._label_for(col1, labels),
+                yaxis_title=self._label_for(col2, labels),
+            )
             self._apply_standard_layout(fig)
             return fig
 
