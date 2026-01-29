@@ -81,7 +81,7 @@ class WorkflowHandler(ABC):
     or sent to the LLM.
 
     Use cases:
-    - Slash commands (/help, /reset, /report)
+    - Slash commands (/help, /reset)
     - Pattern-based routing (regex matching)
     - State-based workflows (onboarding, surveys)
     - Custom quota enforcement with helpful messages
@@ -102,19 +102,12 @@ class WorkflowHandler(ABC):
                         ]
                     )
 
-                # Execute tool for reports
-                if message.startswith("/report"):
-                    tool = await agent.tool_registry.get_tool("generate_report")
-                    result = await tool.execute(ToolContext(user=user), {})
-                    return WorkflowResult(should_skip_llm=True, components=[result.ui_component])
-
                 # Not handled, continue to agent
                 return WorkflowResult(should_skip_llm=False)
 
             async def get_starter_ui(self, agent, user, conversation):
                 return [
                     RichTextComponent(content=f"Welcome {user.username}!"),
-                    ButtonComponent(label="Generate Report", value="/report"),
                 ]
 
         agent = Agent(
@@ -166,18 +159,6 @@ class WorkflowHandler(ABC):
 
         Example:
             async def try_handle(self, agent, user, conversation, message):
-                # Pattern matching with tool execution
-                if message.startswith("/report"):
-                    # Execute tool from registry
-                    tool = await agent.tool_registry.get_tool("generate_sales_report")
-                    context = ToolContext(user=user, conversation=conversation)
-                    result = await tool.execute(context, {})
-
-                    return WorkflowResult(
-                        should_skip_llm=True,
-                        components=[...]
-                    )
-
                 # State-based workflow
                 if user.metadata.get("needs_onboarding"):
                     return await self._onboarding_flow(agent, user, message)
