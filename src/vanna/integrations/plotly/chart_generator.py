@@ -69,6 +69,24 @@ class PlotlyChartGenerator:
             fig.update_layout(yaxis_title=y_axis_title)
         return fig
 
+    def _is_time_like(self, series: pd.Series, name: str) -> bool:
+        """Heuristic for detecting time-like x axes (week/day/month/date)."""
+        name_lower = (name or "").lower()
+        if name_lower in ("day", "date", "week", "month", "requested_at", "timestamp"):
+            return True
+
+        if pd.api.types.is_datetime64_any_dtype(series):
+            return True
+
+        if pd.api.types.is_object_dtype(series) or pd.api.types.is_string_dtype(series):
+            sample = series.dropna().astype(str).head(50)
+            if sample.empty:
+                return False
+            parsed = pd.to_datetime(sample, errors="coerce", utc=True)
+            return float(parsed.notna().mean()) >= 0.9
+
+        return False
+
     def _enable_bar_value_labels(self, fig: go.Figure) -> go.Figure:
         """Annotate bars with their values.
 
@@ -155,6 +173,16 @@ class PlotlyChartGenerator:
                 categorical_cols[0],
                 numeric_cols[0],
                 title,
+                labels=labels,
+            )
+        elif len(numeric_cols) == 1 and len(categorical_cols) >= 2:
+            # Multiple categoricals + one numeric:
+            # use the numeric metric (e.g., weekly_count, growth_rate) rather than counting row existence.
+            fig = self._create_grouped_bar_chart(
+                df,
+                categorical_cols,
+                title,
+                value_col=numeric_cols[0],
                 labels=labels,
             )
         elif len(numeric_cols) == 2:
@@ -246,8 +274,11 @@ class PlotlyChartGenerator:
         """
         # Aggregate if needed
         agg_df = df.groupby(x_col)[y_col].sum().reset_index()
-        # Sort by y-axis values in descending order (high to low)
-        agg_df = agg_df.sort_values(by=y_col, ascending=False)
+        # Sort: time-like x keeps chronological order; otherwise high-to-low.
+        if self._is_time_like(agg_df[x_col], x_col):
+            agg_df = agg_df.sort_values(by=x_col, ascending=True)
+        else:
+            agg_df = agg_df.sort_values(by=y_col, ascending=False)
         fig = px.bar(
             agg_df,
             x=x_col,
@@ -256,8 +287,9 @@ class PlotlyChartGenerator:
             color_discrete_sequence=[self.THEME_COLORS["orange"]],
         )
         self._enable_bar_value_labels(fig)
-        # Ensure x-axis maintains the sorted order (not alphabetical)
-        fig.update_xaxes(categoryorder="total descending")
+        # Ensure x-axis maintains the computed order (not alphabetical) for categorical x axes.
+        if not pd.api.types.is_datetime64_any_dtype(agg_df[x_col]):
+            fig.update_xaxes(categoryorder="array", categoryarray=agg_df[x_col].tolist())
         fig.update_layout(
             xaxis_title=self._label_for(x_col, labels),
             yaxis_title=self._label_for(y_col, labels),
@@ -361,34 +393,60 @@ class PlotlyChartGenerator:
         categorical_cols: List[str],
         title: str,
         *,
+        value_col: Optional[str] = None,
         labels: Optional[Dict[str, str]] = None,
     ) -> go.Figure:
         """Create a grouped bar chart for multiple categorical columns.
 
-        By default, bars are sorted by count values in descending order (high to low).
+        If `value_col` is provided, the chart uses that numeric metric (aggregated by sum)
+        instead of counting row existence (which produces lots of 1s for pre-aggregated data).
         """
         # Use first two categorical columns
         if len(categorical_cols) >= 2:
-            # Count occurrences
-            grouped = df.groupby(categorical_cols[:2]).size().reset_index(name="count")
-            # Sort by count in descending order
-            grouped = grouped.sort_values(by="count", ascending=False)
+            x_col, color_col = categorical_cols[0], categorical_cols[1]
+            # Prefer a time-like column on x axis if present.
+            if self._is_time_like(df[color_col], color_col) and not self._is_time_like(
+                df[x_col], x_col
+            ):
+                x_col, color_col = color_col, x_col
+
+            if value_col:
+                grouped = (
+                    df.groupby([x_col, color_col])[value_col]
+                    .sum()
+                    .reset_index(name=value_col)
+                )
+                y_col = value_col
+                y_axis_title = self._label_for(value_col, labels)
+            else:
+                grouped = df.groupby([x_col, color_col]).size().reset_index(name="count")
+                y_col = "count"
+                y_axis_title = "Count"
+
+            # Sort: time-like x keeps chronological order; otherwise high-to-low.
+            if self._is_time_like(grouped[x_col], x_col):
+                grouped = grouped.sort_values(by=x_col, ascending=True)
+            else:
+                grouped = grouped.sort_values(by=y_col, ascending=False)
+
             fig = px.bar(
                 grouped,
-                x=categorical_cols[0],
-                y="count",
-                color=categorical_cols[1],
+                x=x_col,
+                y=y_col,
+                color=color_col,
                 title=title,
                 barmode="group",
                 color_discrete_sequence=self.COLOR_PALETTE,
             )
             self._enable_bar_value_labels(fig)
-            # Ensure x-axis maintains the sorted order (not alphabetical)
-            fig.update_xaxes(categoryorder="total descending")
+            if not pd.api.types.is_datetime64_any_dtype(grouped[x_col]):
+                fig.update_xaxes(
+                    categoryorder="array", categoryarray=grouped[x_col].tolist()
+                )
             fig.update_layout(
-                xaxis_title=self._label_for(categorical_cols[0], labels),
-                yaxis_title="Count",
-                legend_title_text=self._label_for(categorical_cols[1], labels),
+                xaxis_title=self._label_for(x_col, labels),
+                yaxis_title=y_axis_title,
+                legend_title_text=self._label_for(color_col, labels),
             )
             self._apply_standard_layout(fig)
             return fig
