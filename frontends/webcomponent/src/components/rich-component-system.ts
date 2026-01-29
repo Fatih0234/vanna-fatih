@@ -1336,17 +1336,36 @@ export class ChartComponentRenderer extends BaseComponentRenderer {
         chartElement.theme = vannaChat.getAttribute('theme') || 'dark';
       }
 
-      // Wrap in container with optional title
-      if (title) {
-        container.innerHTML = `
+      // Wrap in container with optional title + an export action button
+      const headerHTML = title
+        ? `
           <div class="chart-header">
             <h3 class="chart-title">${title}</h3>
           </div>
-          <div class="chart-content"></div>
-        `;
-        container.querySelector('.chart-content')?.appendChild(chartElement);
-      } else {
-        container.appendChild(chartElement);
+        `
+        : '';
+
+      container.innerHTML = `
+        ${headerHTML}
+        <div class="dataframe-actions chart-actions">
+          <button class="export-btn chart-export-btn" title="Export chart as image">📥 Export</button>
+        </div>
+        <div class="chart-content"></div>
+      `;
+
+      const content = container.querySelector('.chart-content');
+      content?.appendChild(chartElement);
+
+      const exportBtn = container.querySelector('.chart-export-btn') as HTMLButtonElement | null;
+      if (exportBtn) {
+        exportBtn.disabled = true;
+        exportBtn.addEventListener('click', async () => {
+          try {
+            await chartElement.downloadImage();
+          } catch (err) {
+            console.error('Failed to export chart image:', err);
+          }
+        });
       }
 
       // Set data AFTER the element is in the DOM
@@ -1355,6 +1374,10 @@ export class ChartComponentRenderer extends BaseComponentRenderer {
         chartElement.data = plotlyData; // Plotly traces (array)
         chartElement.layout = layout; // Plotly layout (object)
         chartElement.config = config;
+
+        if (exportBtn) {
+          exportBtn.disabled = false;
+        }
 
         console.log('ChartComponentRenderer: Set properties after DOM attachment');
         console.log('ChartComponentRenderer: chartElement.data:', chartElement.data);

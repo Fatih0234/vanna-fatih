@@ -2,6 +2,7 @@
 
 from typing import Optional, Type
 import logging
+import re
 import pandas as pd
 from pydantic import BaseModel, Field
 
@@ -26,6 +27,26 @@ class VisualizeDataArgs(BaseModel):
     filename: str = Field(description="Name of the CSV file to visualize")
     title: Optional[str] = Field(
         default=None, description="Optional title for the chart"
+    )
+    labels: Optional[dict[str, str]] = Field(
+        default=None,
+        description=(
+            "Optional mapping from column name to human-friendly label. "
+            "Used for axis titles and legend labels when applicable. "
+            "Example: {'bike_issue_category': 'Bike Issue Category'}"
+        ),
+    )
+    x_axis_title: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional override for the x-axis title (takes precedence over labels/defaults)."
+        ),
+    )
+    y_axis_title: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional override for the y-axis title (takes precedence over labels/defaults)."
+        ),
     )
 
 
@@ -54,6 +75,12 @@ class VisualizeDataTool(Tool[VisualizeDataArgs]):
     def description(self) -> str:
         return "Create a visualization from a CSV file. The tool automatically selects an appropriate chart type based on the data."
 
+    def _safe_filename(self, value: str) -> str:
+        # Keep it simple (no extra deps): collapse whitespace and strip non-filename chars.
+        name = re.sub(r"\s+", "_", (value or "").strip())
+        name = re.sub(r"[^a-zA-Z0-9._-]+", "", name)
+        return name or "chart"
+
     def get_args_schema(self) -> Type[VisualizeDataArgs]:
         return VisualizeDataArgs
 
@@ -78,10 +105,17 @@ class VisualizeDataTool(Tool[VisualizeDataArgs]):
 
             # Generate title
             title = args.title or f"Visualization of {args.filename}"
+            download_name = self._safe_filename(title)
 
             # Generate chart using PlotlyChartGenerator
             logger.info("Generating chart...")
-            chart_dict = self.plotly_generator.generate_chart(df, title)
+            chart_dict = self.plotly_generator.generate_chart(
+                df,
+                title,
+                labels=args.labels,
+                x_axis_title=args.x_axis_title,
+                y_axis_title=args.y_axis_title,
+            )
             logger.info(
                 f"Chart generated, type: {type(chart_dict)}, keys: {list(chart_dict.keys()) if isinstance(chart_dict, dict) else 'N/A'}"
             )
@@ -98,8 +132,13 @@ class VisualizeDataTool(Tool[VisualizeDataArgs]):
                 data=chart_dict,
                 title=title,
                 config={
-                    "data_shape": {"rows": row_count, "columns": col_count},
-                    "source_file": args.filename,
+                    # Plotly config for image export (used by the UI "Export" button).
+                    "displaylogo": False,
+                    "toImageButtonOptions": {
+                        "format": "png",
+                        "filename": download_name,
+                        "scale": 2,
+                    },
                 },
             )
             logger.info("ChartComponent created successfully")

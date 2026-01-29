@@ -26,16 +26,17 @@ def register_chat_routes(
     """
     config = config or {}
 
-    @app.route("/")
-    def index() -> str:
-        """Serve the main chat interface."""
-        dev_mode = config.get("dev_mode", False)
-        cdn_url = config.get("cdn_url", "https://img.vanna.ai/vanna-components.js")
-        api_base_url = config.get("api_base_url", "")
+    if config.get("serve_index", True):
+        @app.route("/")
+        def index() -> str:
+            """Serve the main chat interface."""
+            dev_mode = config.get("dev_mode", False)
+            cdn_url = config.get("cdn_url", "https://img.vanna.ai/vanna-components.js")
+            api_base_url = config.get("api_base_url", "")
 
-        return get_index_html(
-            dev_mode=dev_mode, cdn_url=cdn_url, api_base_url=api_base_url
-        )
+            return get_index_html(
+                dev_mode=dev_mode, cdn_url=cdn_url, api_base_url=api_base_url
+            )
 
     @app.route("/api/vanna/v2/chat_sse", methods=["POST"])
     def chat_sse() -> Union[Response, tuple[Response, int]]:

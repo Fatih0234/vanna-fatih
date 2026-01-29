@@ -708,6 +708,10 @@ export const richComponentStyles = css`
     min-height: 300px;
   }
 
+  .dataframe-actions.chart-actions {
+    justify-content: flex-end;
+  }
+
   .chart-error {
     padding: var(--vanna-space-4);
     background: var(--vanna-accent-negative-subtle);
