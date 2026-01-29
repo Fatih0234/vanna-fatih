@@ -153,16 +153,9 @@ class GenerateReportTool(Tool[GenerateReportArgs]):
             charts_html: List[str] = []
             for chart_ref in slide.charts:
                 embedded_chart_files.append(chart_ref.chart_html_file)
-                try:
-                    chart_html = await self.file_system.read_file(
-                        chart_ref.chart_html_file, context
-                    )
-                except FileNotFoundError:
-                    missing = html.escape(chart_ref.chart_html_file)
-                    chart_html = (
-                        f"<div class='chart-missing'>Missing chart artifact: "
-                        f"<code>{missing}</code></div>"
-                    )
+                chart_html = await self.file_system.read_file(
+                    chart_ref.chart_html_file, context
+                )
 
                 caption_html = (
                     f"<div class='chart-caption'>{render_basic_markdown(chart_ref.caption)}</div>"
@@ -304,15 +297,6 @@ class GenerateReportTool(Tool[GenerateReportArgs]):
       font-size: 13px;
       line-height: 1.45;
     }}
-    .chart-missing {{
-      color: var(--muted);
-      font-size: 13px;
-      line-height: 1.45;
-      padding: 12px;
-      border: 1px dashed var(--border);
-      border-radius: 10px;
-      background: rgba(255,255,255,0.02);
-    }}
     @media print {{
       body {{ background: #ffffff; color: #111; }}
       .slide {{
@@ -381,3 +365,4 @@ class GenerateReportTool(Tool[GenerateReportArgs]):
                 "embedded_chart_html_files": embedded_chart_files,
             },
         )
+
