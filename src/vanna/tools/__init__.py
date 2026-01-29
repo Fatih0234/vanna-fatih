@@ -18,7 +18,6 @@ from .python import (
 from vanna.integrations.plotly import PlotlyChartGenerator
 from .run_sql import RunSqlTool
 from .visualize_data import VisualizeDataTool
-from .generate_report import GenerateReportTool
 
 __all__ = [
     # File system
@@ -39,6 +38,4 @@ __all__ = [
     # Visualization
     "PlotlyChartGenerator",
     "VisualizeDataTool",
-    # Reports
-    "GenerateReportTool",
 ]
